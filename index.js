@@ -38,7 +38,7 @@ try {
 
 const mongoString = process.env.DATABASE_URL;
 mongoose.set("strictQuery", false);
-mongoose.connect(mongoString, { dbName: "bio-data" });
+mongoose.connect(mongoString, { dbName: "bio-data-pro" });
 const database = mongoose.connection;
 
 database.on('error', (error) => console.log(error));
