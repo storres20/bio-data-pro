@@ -21,7 +21,7 @@ This is the backend server of the **MHUTEMP** project, responsible for receiving
 1. Clone this repository:
 
 ```sh
-git clone https://github.com/storres20/bio-data.git
+git clone https://github.com/storres20/bio-data-pro.git
 ```
 
 2. Install dependencies:
@@ -39,10 +39,4 @@ pnpm start
 
 ## 📚 Related Repositories
 
-- [MHUTEMP Frontend Application (Next.js)](https://github.com/storres20/bio-data-nextjs)
-
-## 📜 License
-
-This project is licensed under the MIT License.  
-See the [LICENSE](https://github.com/storres20/bio-data/blob/main/LICENSE.txt) file for more details.
-
+- [MHUTEMP Frontend Application (Next.js)](https://github.com/storres20/bio-data-nextjs-pro)
