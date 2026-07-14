@@ -422,7 +422,16 @@ wss.on('connection', (ws) => {
             const parsed = JSON.parse(message);
 
             if (parsed.type === 'ping' && !parsed.username) {
-                ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+                const pongMsg = { type: 'pong', timestamp: Date.now() };
+
+                // ⬇️ AGREGADO: eco de seq/t_send_ms para la prueba de latencia RTT del ESP32
+                if (parsed.seq !== undefined && parsed.t_send_ms !== undefined) {
+                    pongMsg.seq = parsed.seq;
+                    pongMsg.t_send_ms = parsed.t_send_ms;
+                }
+                // ⬆️ FIN AGREGADO
+
+                ws.send(JSON.stringify(pongMsg));
                 ws.isAlive = true;
                 ws.lastMessageTime = Date.now();
                 return;
