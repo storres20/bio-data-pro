@@ -21,6 +21,9 @@ const Device = require('./models/device.model');
 const Simulation = require('./models/simulation.model');
 const DoorEvent = require('./models/door-event.model');
 
+// metrics
+const metricsRoutes = require("./metrics/metrics.routes");
+
 // Inicializar Firebase Admin
 try {
     const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
@@ -52,6 +55,8 @@ app.get("/", (req, res) => res.json({ message: "Welcome to Bio-Data Back-End app
 app.use('/api/v1/datas', datas);
 app.use('/api/auth', authRoutes);
 app.use('/api/devices', devices);
+// metrics
+app.use("/api/metrics", metricsRoutes);
 
 app.post('/api/devices/fcm-token', async (req, res) => {
     try {
@@ -594,6 +599,10 @@ wss.on('connection', (ws) => {
                 console.log(`⚠️ ${username}: ${validation.reason}, esperando datos...`);
                 return;
             }
+
+            // Métrica: intervalo observado entre mensajes válidos
+            // recibidos consecutivamente desde el mismo dispositivo.
+            recordMessageArrival(username);
 
             const sensorStatus = [];
             if (validation.activeSensors.dht) sensorStatus.push('DHT✓');
