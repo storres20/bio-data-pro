@@ -7,9 +7,16 @@ const {
     stopMetricsSession,
     resetMetricsSession,
     getMetricsStatus,
+
+    // Experimento 1
     getUpdateIntervalSummary,
     getRawUpdateIntervals,
     getUpdateIntervalsForExport,
+
+    // Experimento 2
+    getApiResponseSummary,
+    getApiResponseRawSamples,
+    getApiResponseSamplesForExport,
 } = require("./metrics.service");
 
 const router = express.Router();
@@ -153,6 +160,11 @@ router.post("/reset", (req, res) => {
     }
 });
 
+// =========================================================
+// EXPERIMENTO 1
+// OBSERVED WEBSOCKET UPDATE INTERVAL
+// =========================================================
+
 // ---------------------------------------------------------
 // RESUMEN DEL INTERVALO WEBSOCKET
 // ---------------------------------------------------------
@@ -170,21 +182,21 @@ router.get(
             });
         } catch (error) {
             console.error(
-                "Error generating metrics summary:",
+                "Error generating update interval summary:",
                 error
             );
 
             return res.status(500).json({
                 success: false,
                 error:
-                    "Unable to generate metrics summary",
+                    "Unable to generate update interval summary",
             });
         }
     }
 );
 
 // ---------------------------------------------------------
-// MUESTRAS CRUDAS EN JSON
+// MUESTRAS CRUDAS DEL INTERVALO WEBSOCKET
 // ---------------------------------------------------------
 
 router.get(
@@ -209,21 +221,21 @@ router.get(
             });
         } catch (error) {
             console.error(
-                "Error reading raw metrics:",
+                "Error reading raw update interval metrics:",
                 error
             );
 
             return res.status(500).json({
                 success: false,
                 error:
-                    "Unable to read raw metrics",
+                    "Unable to read raw update interval metrics",
             });
         }
     }
 );
 
 // ---------------------------------------------------------
-// EXPORTACIÓN CSV
+// EXPORTACIÓN CSV DEL INTERVALO WEBSOCKET
 // ---------------------------------------------------------
 
 router.get(
@@ -330,14 +342,253 @@ router.get(
             );
         } catch (error) {
             console.error(
-                "Error exporting CSV metrics:",
+                "Error exporting update interval CSV:",
                 error
             );
 
             return res.status(500).json({
                 success: false,
                 error:
-                    "Unable to export metrics CSV",
+                    "Unable to export update interval CSV",
+            });
+        }
+    }
+);
+
+// =========================================================
+// EXPERIMENTO 2
+// API RESPONSE TIME
+// =========================================================
+
+// ---------------------------------------------------------
+// RESUMEN DEL TIEMPO DE RESPUESTA API
+// ---------------------------------------------------------
+
+router.get(
+    "/api-response/summary",
+    (req, res) => {
+        try {
+            return res.json({
+                success: true,
+                generatedAt:
+                    new Date().toISOString(),
+                data:
+                    getApiResponseSummary(),
+            });
+        } catch (error) {
+            console.error(
+                "Error generating API response summary:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    "Unable to generate API response summary",
+            });
+        }
+    }
+);
+
+// ---------------------------------------------------------
+// MUESTRAS CRUDAS DEL TIEMPO DE RESPUESTA API
+// ---------------------------------------------------------
+
+router.get(
+    "/api-response/raw",
+    (req, res) => {
+        try {
+            const {
+                username = null,
+                limit = 1000,
+            } = req.query;
+
+            const samples =
+                getApiResponseRawSamples({
+                    username,
+                    limit,
+                });
+
+            return res.json({
+                success: true,
+                count: samples.length,
+                filters: {
+                    username,
+                    limit: Number(limit),
+                },
+                data: samples,
+            });
+        } catch (error) {
+            console.error(
+                "Error reading raw API response metrics:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    "Unable to read raw API response metrics",
+            });
+        }
+    }
+);
+
+// ---------------------------------------------------------
+// EXPORTACIÓN CSV DEL TIEMPO DE RESPUESTA API
+// ---------------------------------------------------------
+
+router.get(
+    "/api-response/export.csv",
+    (req, res) => {
+        try {
+            const { username = null } =
+                req.query;
+
+            const samples =
+                getApiResponseSamplesForExport(
+                    username
+                );
+
+            const status =
+                getMetricsStatus();
+
+            const header = [
+                "session_id",
+                "sample_number",
+                "username",
+                "method",
+                "route",
+                "request_url",
+                "status_code",
+                "recorded_at_utc",
+                "response_time_ms",
+                "response_time_seconds",
+                "payload_bytes",
+                "payload_kilobytes",
+                "payload_megabytes",
+                "records_returned",
+                "request_success",
+            ];
+
+            const rows = samples.map(
+                (sample, index) => {
+                    const requestSuccess =
+                        Number.isFinite(
+                            sample.statusCode
+                        ) &&
+                        sample.statusCode >= 200 &&
+                        sample.statusCode < 300;
+
+                    return [
+                        sample.sessionId,
+                        index + 1,
+                        sample.username,
+                        sample.method,
+                        sample.route,
+                        sample.requestUrl,
+                        sample.statusCode,
+                        sample.recordedAt,
+
+                        Number.isFinite(
+                            sample.responseTimeMs
+                        )
+                            ? sample.responseTimeMs.toFixed(
+                                3
+                            )
+                            : "",
+
+                        Number.isFinite(
+                            sample.responseTimeMs
+                        )
+                            ? (
+                                sample.responseTimeMs /
+                                1000
+                            ).toFixed(6)
+                            : "",
+
+                        sample.payloadBytes ?? "",
+
+                        Number.isFinite(
+                            sample.payloadKilobytes
+                        )
+                            ? sample.payloadKilobytes.toFixed(
+                                3
+                            )
+                            : "",
+
+                        Number.isFinite(
+                            sample.payloadMegabytes
+                        )
+                            ? sample.payloadMegabytes.toFixed(
+                                6
+                            )
+                            : "",
+
+                        sample.recordsReturned ?? "",
+
+                        requestSuccess
+                            ? "true"
+                            : "false",
+                    ]
+                        .map(escapeCsvValue)
+                        .join(",");
+                }
+            );
+
+            const csvContent =
+                "\uFEFF" +
+                [
+                    header.join(","),
+                    ...rows,
+                ].join("\r\n");
+
+            const sessionName =
+                status.sessionId
+                    ? sanitizeFilename(
+                        status.sessionId
+                    )
+                    : "no-session";
+
+            const usernameName =
+                username
+                    ? `-${sanitizeFilename(
+                        username
+                    )}`
+                    : "-all-usernames";
+
+            const filename =
+                `api-response-time-` +
+                `${sessionName}` +
+                `${usernameName}.csv`;
+
+            res.setHeader(
+                "Content-Type",
+                "text/csv; charset=utf-8"
+            );
+
+            res.setHeader(
+                "Content-Disposition",
+                `attachment; filename="${filename}"`
+            );
+
+            res.setHeader(
+                "Cache-Control",
+                "no-store"
+            );
+
+            return res.status(200).send(
+                csvContent
+            );
+        } catch (error) {
+            console.error(
+                "Error exporting API response CSV:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    "Unable to export API response CSV",
             });
         }
     }
