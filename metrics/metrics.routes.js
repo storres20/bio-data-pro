@@ -17,6 +17,12 @@ const {
     getApiResponseSummary,
     getApiResponseRawSamples,
     getApiResponseSamplesForExport,
+
+    // Experimento 3
+    setMemoryPhase,
+    getMemoryUsageSummary,
+    getMemoryUsageRawSamples,
+    getMemoryUsageSamplesForExport,
 } = require("./metrics.service");
 
 const router = express.Router();
@@ -589,6 +595,239 @@ router.get(
                 success: false,
                 error:
                     "Unable to export API response CSV",
+            });
+        }
+    }
+);
+
+
+// =========================================================
+// EXPERIMENTO 3
+// BACKEND MEMORY USAGE
+// =========================================================
+
+router.post(
+    "/memory/phase",
+    (req, res) => {
+        try {
+            const { phase } = req.body;
+
+            const result =
+                setMemoryPhase(phase);
+
+            return res.json({
+                success: true,
+                message:
+                    "Memory experiment phase updated",
+                data: result,
+            });
+        } catch (error) {
+            return res.status(400).json({
+                success: false,
+                error: error.message,
+                allowedPhases: [
+                    "baseline",
+                    "api_load",
+                    "recovery",
+                    "post_load",
+                ],
+            });
+        }
+    }
+);
+
+router.get(
+    "/memory/summary",
+    (req, res) => {
+        try {
+            return res.json({
+                success: true,
+                generatedAt:
+                    new Date().toISOString(),
+                data:
+                    getMemoryUsageSummary(),
+            });
+        } catch (error) {
+            console.error(
+                "Error generating memory summary:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    "Unable to generate memory summary",
+            });
+        }
+    }
+);
+
+router.get(
+    "/memory/raw",
+    (req, res) => {
+        try {
+            const {
+                phase = null,
+                limit = 1000,
+            } = req.query;
+
+            const samples =
+                getMemoryUsageRawSamples({
+                    phase,
+                    limit,
+                });
+
+            return res.json({
+                success: true,
+                count: samples.length,
+                filters: {
+                    phase,
+                    limit: Number(limit),
+                },
+                data: samples,
+            });
+        } catch (error) {
+            console.error(
+                "Error reading memory samples:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    "Unable to read memory samples",
+            });
+        }
+    }
+);
+
+router.get(
+    "/memory/export.csv",
+    (req, res) => {
+        try {
+            const { phase = null } =
+                req.query;
+
+            const samples =
+                getMemoryUsageSamplesForExport(
+                    phase
+                );
+
+            const status =
+                getMetricsStatus();
+
+            const header = [
+                "session_id",
+                "sample_number",
+                "recorded_at_utc",
+                "elapsed_ms",
+                "elapsed_seconds",
+                "phase",
+                "rss_bytes",
+                "rss_megabytes",
+                "heap_total_bytes",
+                "heap_total_megabytes",
+                "heap_used_bytes",
+                "heap_used_megabytes",
+                "external_bytes",
+                "external_megabytes",
+                "array_buffers_bytes",
+                "array_buffers_megabytes",
+            ];
+
+            const rows = samples.map(
+                (sample, index) => [
+                    sample.sessionId,
+                    index + 1,
+                    sample.recordedAt,
+                    sample.elapsedMs,
+                    Number.isFinite(
+                        sample.elapsedSeconds
+                    )
+                        ? sample.elapsedSeconds.toFixed(
+                            3
+                        )
+                        : "",
+                    sample.phase,
+                    sample.rssBytes,
+                    sample.rssMegabytes.toFixed(
+                        6
+                    ),
+                    sample.heapTotalBytes,
+                    sample.heapTotalMegabytes.toFixed(
+                        6
+                    ),
+                    sample.heapUsedBytes,
+                    sample.heapUsedMegabytes.toFixed(
+                        6
+                    ),
+                    sample.externalBytes,
+                    sample.externalMegabytes.toFixed(
+                        6
+                    ),
+                    sample.arrayBuffersBytes,
+                    sample.arrayBuffersMegabytes.toFixed(
+                        6
+                    ),
+                ]
+                    .map(escapeCsvValue)
+                    .join(",")
+            );
+
+            const csvContent =
+                "\uFEFF" +
+                [
+                    header.join(","),
+                    ...rows,
+                ].join("\r\n");
+
+            const sessionName =
+                status.sessionId
+                    ? sanitizeFilename(
+                        status.sessionId
+                    )
+                    : "no-session";
+
+            const phaseName =
+                phase
+                    ? `-${sanitizeFilename(
+                        phase
+                    )}`
+                    : "-all-phases";
+
+            const filename =
+                `backend-memory-usage-` +
+                `${sessionName}` +
+                `${phaseName}.csv`;
+
+            res.setHeader(
+                "Content-Type",
+                "text/csv; charset=utf-8"
+            );
+
+            res.setHeader(
+                "Content-Disposition",
+                `attachment; filename="${filename}"`
+            );
+
+            res.setHeader(
+                "Cache-Control",
+                "no-store"
+            );
+
+            return res
+                .status(200)
+                .send(csvContent);
+        } catch (error) {
+            console.error(
+                "Error exporting memory CSV:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    "Unable to export memory CSV",
             });
         }
     }

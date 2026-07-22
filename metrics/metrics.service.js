@@ -9,6 +9,10 @@ const { performance } = require("node:perf_hooks");
 const MAX_SAMPLES = 50_000;
 const MAX_API_RESPONSE_SAMPLES = 10_000;
 
+// Experimento 3: memoria del backend
+const MAX_MEMORY_SAMPLES = 10_000;
+const MEMORY_SAMPLE_INTERVAL_MS = 2000;
+
 const NOMINAL_INTERVAL_MS = 2000;
 
 // Umbrales del experimento WebSocket.
@@ -39,6 +43,12 @@ const updateIntervals = [];
 // Experimento 2: tiempos de respuesta de API.
 const apiResponseSamples = [];
 
+// Experimento 3: muestras de memoria del proceso Node.js
+const memoryUsageSamples = [];
+
+let memorySamplerId = null;
+let currentMemoryPhase = "baseline";
+
 // ---------------------------------------------------------
 // CONTROL DE LA SESIÓN
 // ---------------------------------------------------------
@@ -66,6 +76,7 @@ function generateSessionId() {
 function startMetricsSession() {
     updateIntervals.length = 0;
     apiResponseSamples.length = 0;
+    memoryUsageSamples.length = 0;
 
     lastArrivalByDevice.clear();
 
@@ -73,6 +84,10 @@ function startMetricsSession() {
     startedAt = new Date().toISOString();
     stoppedAt = null;
     sessionId = generateSessionId();
+
+    currentMemoryPhase = "baseline";
+
+    startMemorySampler();
 
     return getMetricsStatus();
 }
@@ -88,13 +103,16 @@ function startMetricsSession() {
  * @returns {object}
  */
 function stopMetricsSession() {
+    /*
+     * Toma una última muestra antes de desactivar
+     * la sesión.
+     */
+    recordMemoryUsage();
+    stopMemorySampler();
+
     metricsEnabled = false;
     stoppedAt = new Date().toISOString();
 
-    /*
-     * Evita utilizar como referencia un mensaje WebSocket
-     * recibido antes de una futura sesión.
-     */
     lastArrivalByDevice.clear();
 
     return getMetricsStatus();
@@ -120,7 +138,8 @@ function getMetricsStatus() {
 
         totalSamples:
             updateIntervals.length +
-            apiResponseSamples.length,
+            apiResponseSamples.length +
+            memoryUsageSamples.length,
 
         experiments: {
             websocketUpdateInterval: {
@@ -134,6 +153,23 @@ function getMetricsStatus() {
                 MAX_API_RESPONSE_SAMPLES,
                 testedUsernames:
                     Array.from(API_TEST_USERNAMES),
+            },
+
+            backendMemoryUsage: {
+                samples:
+                memoryUsageSamples.length,
+
+                maximumSamples:
+                MAX_MEMORY_SAMPLES,
+
+                sampleIntervalMs:
+                MEMORY_SAMPLE_INTERVAL_MS,
+
+                currentPhase:
+                currentMemoryPhase,
+
+                samplerActive:
+                    memorySamplerId !== null,
             },
         },
 
@@ -149,6 +185,8 @@ function getMetricsStatus() {
             websocketUpdateInterval: MAX_SAMPLES,
             apiResponseTime:
             MAX_API_RESPONSE_SAMPLES,
+            backendMemoryUsage:
+            MAX_MEMORY_SAMPLES,
         },
     };
 }
@@ -161,6 +199,8 @@ function getMetricsStatus() {
  * @returns {object}
  */
 function resetMetricsSession() {
+    stopMemorySampler();
+
     metricsEnabled = false;
     startedAt = null;
     stoppedAt = null;
@@ -168,6 +208,9 @@ function resetMetricsSession() {
 
     updateIntervals.length = 0;
     apiResponseSamples.length = 0;
+    memoryUsageSamples.length = 0;
+
+    currentMemoryPhase = "baseline";
 
     lastArrivalByDevice.clear();
 
@@ -1362,6 +1405,423 @@ function getApiResponseSamplesForExport(
     return [...apiResponseSamples];
 }
 
+// =========================================================
+// EXPERIMENTO 3:
+// BACKEND MEMORY USAGE
+// =========================================================
+
+function bytesToMegabytes(bytes) {
+    return bytes / (1024 * 1024);
+}
+
+/**
+ * Toma una muestra de memoria del proceso Node.js.
+ */
+function recordMemoryUsage() {
+    if (!metricsEnabled) {
+        return null;
+    }
+
+    const memory = process.memoryUsage();
+
+    const elapsedMs =
+        startedAt
+            ? Date.now() -
+            new Date(startedAt).getTime()
+            : null;
+
+    const sample = {
+        sessionId,
+        sampleNumber:
+            memoryUsageSamples.length + 1,
+
+        recordedAt:
+            new Date().toISOString(),
+
+        elapsedMs,
+
+        elapsedSeconds:
+            elapsedMs === null
+                ? null
+                : elapsedMs / 1000,
+
+        phase: currentMemoryPhase,
+
+        rssBytes: memory.rss,
+        rssMegabytes:
+            bytesToMegabytes(memory.rss),
+
+        heapTotalBytes:
+        memory.heapTotal,
+        heapTotalMegabytes:
+            bytesToMegabytes(
+                memory.heapTotal
+            ),
+
+        heapUsedBytes:
+        memory.heapUsed,
+        heapUsedMegabytes:
+            bytesToMegabytes(
+                memory.heapUsed
+            ),
+
+        externalBytes:
+        memory.external,
+        externalMegabytes:
+            bytesToMegabytes(
+                memory.external
+            ),
+
+        arrayBuffersBytes:
+            memory.arrayBuffers ?? 0,
+        arrayBuffersMegabytes:
+            bytesToMegabytes(
+                memory.arrayBuffers ?? 0
+            ),
+    };
+
+    memoryUsageSamples.push(sample);
+
+    if (
+        memoryUsageSamples.length >
+        MAX_MEMORY_SAMPLES
+    ) {
+        memoryUsageSamples.splice(
+            0,
+            memoryUsageSamples.length -
+            MAX_MEMORY_SAMPLES
+        );
+    }
+
+    return sample;
+}
+
+/**
+ * Inicia el muestreo automático cada 2 segundos.
+ */
+function startMemorySampler() {
+    stopMemorySampler();
+
+    currentMemoryPhase = "baseline";
+
+    // Muestra inicial en t ≈ 0
+    recordMemoryUsage();
+
+    memorySamplerId = setInterval(
+        recordMemoryUsage,
+        MEMORY_SAMPLE_INTERVAL_MS
+    );
+}
+
+/**
+ * Detiene el muestreo automático.
+ */
+function stopMemorySampler() {
+    if (memorySamplerId !== null) {
+        clearInterval(memorySamplerId);
+        memorySamplerId = null;
+    }
+}
+
+/**
+ * Permite cambiar manualmente la fase experimental.
+ */
+function setMemoryPhase(phase) {
+    const allowedPhases = new Set([
+        "baseline",
+        "api_load",
+        "recovery",
+        "post_load",
+    ]);
+
+    if (
+        typeof phase !== "string" ||
+        !allowedPhases.has(phase.trim())
+    ) {
+        throw new Error(
+            "Invalid memory phase"
+        );
+    }
+
+    currentMemoryPhase = phase.trim();
+
+    /*
+     * Registra inmediatamente una muestra para marcar
+     * con precisión el cambio de fase.
+     */
+    recordMemoryUsage();
+
+    return {
+        phase: currentMemoryPhase,
+        changedAt:
+            new Date().toISOString(),
+        memorySamples:
+        memoryUsageSamples.length,
+    };
+}
+
+function calculateMemoryMetricStatistics(
+    samples,
+    property
+) {
+    const values = samples
+        .map((sample) => sample[property])
+        .filter(Number.isFinite)
+        .sort((a, b) => a - b);
+
+    if (values.length === 0) {
+        return {
+            count: 0,
+            mean: null,
+            standardDeviation: null,
+            median: null,
+            p95: null,
+            min: null,
+            max: null,
+        };
+    }
+
+    const mean = calculateMean(values);
+
+    return formatStatistics({
+        count: values.length,
+        mean,
+        standardDeviation:
+            calculateSampleStandardDeviation(
+                values,
+                mean
+            ),
+        median:
+            calculatePercentile(
+                values,
+                0.5
+            ),
+        p95:
+            calculatePercentile(
+                values,
+                0.95
+            ),
+        min: values[0],
+        max:
+            values[values.length - 1],
+    });
+}
+
+function summarizeMemoryGroup(samples) {
+    if (samples.length === 0) {
+        return {
+            count: 0,
+            rssMegabytes: null,
+            heapUsedMegabytes: null,
+            heapTotalMegabytes: null,
+            externalMegabytes: null,
+            arrayBuffersMegabytes: null,
+        };
+    }
+
+    return {
+        count: samples.length,
+
+        rssMegabytes:
+            calculateMemoryMetricStatistics(
+                samples,
+                "rssMegabytes"
+            ),
+
+        heapUsedMegabytes:
+            calculateMemoryMetricStatistics(
+                samples,
+                "heapUsedMegabytes"
+            ),
+
+        heapTotalMegabytes:
+            calculateMemoryMetricStatistics(
+                samples,
+                "heapTotalMegabytes"
+            ),
+
+        externalMegabytes:
+            calculateMemoryMetricStatistics(
+                samples,
+                "externalMegabytes"
+            ),
+
+        arrayBuffersMegabytes:
+            calculateMemoryMetricStatistics(
+                samples,
+                "arrayBuffersMegabytes"
+            ),
+    };
+}
+
+/**
+ * Calcula cambio entre la primera y última muestra.
+ */
+function calculateMemoryChange(
+    firstSample,
+    lastSample
+) {
+    if (!firstSample || !lastSample) {
+        return null;
+    }
+
+    return formatStatistics({
+        rssChangeMegabytes:
+            lastSample.rssMegabytes -
+            firstSample.rssMegabytes,
+
+        heapUsedChangeMegabytes:
+            lastSample.heapUsedMegabytes -
+            firstSample.heapUsedMegabytes,
+
+        heapTotalChangeMegabytes:
+            lastSample.heapTotalMegabytes -
+            firstSample.heapTotalMegabytes,
+
+        externalChangeMegabytes:
+            lastSample.externalMegabytes -
+            firstSample.externalMegabytes,
+
+        arrayBuffersChangeMegabytes:
+            lastSample.arrayBuffersMegabytes -
+            firstSample.arrayBuffersMegabytes,
+    });
+}
+
+function getMemoryUsageSummary() {
+    const phases = {};
+
+    const phaseNames = [
+        "baseline",
+        "api_load",
+        "recovery",
+        "post_load",
+    ];
+
+    for (const phase of phaseNames) {
+        const phaseSamples =
+            memoryUsageSamples.filter(
+                (sample) =>
+                    sample.phase === phase
+            );
+
+        phases[phase] =
+            summarizeMemoryGroup(
+                phaseSamples
+            );
+    }
+
+    const firstSample =
+        memoryUsageSamples[0] ?? null;
+
+    const lastSample =
+        memoryUsageSamples[
+        memoryUsageSamples.length - 1
+            ] ?? null;
+
+    return {
+        metric:
+            "backend_memory_usage",
+
+        measurementScope:
+            "Node.js process memory measured using process.memoryUsage()",
+
+        sampleIntervalMs:
+        MEMORY_SAMPLE_INTERVAL_MS,
+
+        session: {
+            sessionId,
+            enabled: metricsEnabled,
+            startedAt,
+            stoppedAt,
+        },
+
+        currentPhase:
+        currentMemoryPhase,
+
+        totalSamples:
+        memoryUsageSamples.length,
+
+        global:
+            summarizeMemoryGroup(
+                memoryUsageSamples
+            ),
+
+        phases,
+
+        changeFromFirstToLast:
+            calculateMemoryChange(
+                firstSample,
+                lastSample
+            ),
+
+        firstRecordedAt:
+            firstSample?.recordedAt ??
+            null,
+
+        lastRecordedAt:
+            lastSample?.recordedAt ??
+            null,
+    };
+}
+
+function getMemoryUsageRawSamples({
+                                      phase = null,
+                                      limit = 1000,
+                                  } = {}) {
+    const parsedLimit =
+        Number.parseInt(limit, 10);
+
+    const safeLimit = Math.min(
+        Math.max(
+            Number.isFinite(parsedLimit)
+                ? parsedLimit
+                : 1000,
+            1
+        ),
+        MAX_MEMORY_SAMPLES
+    );
+
+    const normalizedPhase =
+        typeof phase === "string" &&
+        phase.trim() !== ""
+            ? phase.trim()
+            : null;
+
+    const filteredSamples =
+        normalizedPhase
+            ? memoryUsageSamples.filter(
+                (sample) =>
+                    sample.phase ===
+                    normalizedPhase
+            )
+            : memoryUsageSamples;
+
+    return filteredSamples.slice(
+        -safeLimit
+    );
+}
+
+function getMemoryUsageSamplesForExport(
+    phase = null
+) {
+    if (
+        typeof phase === "string" &&
+        phase.trim() !== ""
+    ) {
+        const normalizedPhase =
+            phase.trim();
+
+        return memoryUsageSamples.filter(
+            (sample) =>
+                sample.phase ===
+                normalizedPhase
+        );
+    }
+
+    return [...memoryUsageSamples];
+}
+
 // ---------------------------------------------------------
 // EXPORTACIONES
 // ---------------------------------------------------------
@@ -1384,4 +1844,10 @@ module.exports = {
     getApiResponseSummary,
     getApiResponseRawSamples,
     getApiResponseSamplesForExport,
+
+    // Experimento 3: Backend Memory Usage
+    setMemoryPhase,
+    getMemoryUsageSummary,
+    getMemoryUsageRawSamples,
+    getMemoryUsageSamplesForExport,
 };
