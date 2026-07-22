@@ -22,6 +22,10 @@ const Simulation = require('./models/simulation.model');
 const DoorEvent = require('./models/door-event.model');
 
 // metrics
+const {
+    recordMessageArrival,
+} = require("./metrics/metrics.service");
+
 const metricsRoutes = require("./metrics/metrics.routes");
 
 // Inicializar Firebase Admin
