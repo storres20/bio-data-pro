@@ -28,6 +28,10 @@ const {
 
 const metricsRoutes = require("./metrics/metrics.routes");
 
+const {
+    apiResponseMetricsMiddleware,
+} = require("./metrics/metrics.middleware");
+
 // Inicializar Firebase Admin
 try {
     const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
@@ -45,7 +49,7 @@ try {
 
 const mongoString = process.env.DATABASE_URL;
 mongoose.set("strictQuery", false);
-mongoose.connect(mongoString, { dbName: "bio-data-pro" });
+mongoose.connect(mongoString, { dbName: "bio-data" });
 const database = mongoose.connection;
 
 database.on('error', (error) => console.log(error));
@@ -56,6 +60,13 @@ app.use(express.json());
 app.use(cors({ origin: "*" }));
 
 app.get("/", (req, res) => res.json({ message: "Welcome to Bio-Data Back-End application." }));
+
+/*
+ * Experimento 2:
+ * debe ejecutarse antes de montar las rutas de datos.
+ */
+app.use(apiResponseMetricsMiddleware);
+
 app.use('/api/v1/datas', datas);
 app.use('/api/auth', authRoutes);
 app.use('/api/devices', devices);
