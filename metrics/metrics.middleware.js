@@ -8,13 +8,18 @@ const TARGET_USERNAMES = new Set([
 ]);
 
 /**
- * Extrae el username de rutas con esta estructura:
+ * Extrae el username de:
  *
  * /api/v1/datas/username/MHT-25-001
  * /api/v1/datas/username/MHTv2-25-001
+ *
+ * También elimina los query parameters.
  */
 function extractUsernameFromPath(req) {
-    const match = req.path.match(
+    const requestPath =
+        req.originalUrl.split("?")[0];
+
+    const match = requestPath.match(
         /^\/api\/v1\/datas\/username\/([^/]+)\/?$/
     );
 
@@ -23,13 +28,19 @@ function extractUsernameFromPath(req) {
     }
 
     try {
-        return decodeURIComponent(match[1]).trim();
+        return decodeURIComponent(
+            match[1]
+        ).trim();
     } catch {
         return match[1].trim();
     }
 }
 
-function apiResponseMetricsMiddleware(req, res, next) {
+function apiResponseMetricsMiddleware(
+    req,
+    res,
+    next
+) {
     if (req.method !== "GET") {
         return next();
     }
@@ -65,14 +76,17 @@ function apiResponseMetricsMiddleware(req, res, next) {
                 );
 
             if (Array.isArray(body)) {
-                recordsReturned = body.length;
+                recordsReturned =
+                    body.length;
             } else if (
-                Array.isArray(body?.data)
+                body &&
+                Array.isArray(body.data)
             ) {
                 recordsReturned =
                     body.data.length;
             } else if (
-                Array.isArray(body?.results)
+                body &&
+                Array.isArray(body.results)
             ) {
                 recordsReturned =
                     body.results.length;
@@ -88,49 +102,72 @@ function apiResponseMetricsMiddleware(req, res, next) {
     };
 
     res.once("finish", () => {
-        const endTime =
-            process.hrtime.bigint();
+        try {
+            const endTime =
+                process.hrtime.bigint();
 
-        const responseTimeMs =
-            Number(endTime - startTime) /
-            1_000_000;
+            const responseTimeMs =
+                Number(
+                    endTime - startTime
+                ) / 1_000_000;
 
-        const contentLength =
-            Number(
+            const contentLengthHeader =
                 res.getHeader(
                     "content-length"
-                )
-            );
+                );
 
-        const finalPayloadBytes =
-            Number.isFinite(payloadBytes)
-                ? payloadBytes
-                : Number.isFinite(contentLength)
-                    ? contentLength
+            const contentLength =
+                contentLengthHeader !==
+                undefined
+                    ? Number(
+                        contentLengthHeader
+                    )
                     : null;
 
-        recordApiResponse({
-            method: req.method,
+            const finalPayloadBytes =
+                Number.isFinite(
+                    payloadBytes
+                )
+                    ? payloadBytes
+                    : Number.isFinite(
+                        contentLength
+                    )
+                        ? contentLength
+                        : null;
 
-            /*
-             * Guardamos una ruta general para que las
-             * condiciones puedan compararse fácilmente.
-             */
-            route:
-                "/api/v1/datas/username/:username",
+            recordApiResponse({
+                method: req.method,
+                route:
+                    "/api/v1/datas/username/:username",
+                requestUrl:
+                req.originalUrl,
+                username,
+                statusCode:
+                res.statusCode,
+                responseTimeMs,
+                payloadBytes:
+                finalPayloadBytes,
+                recordsReturned,
+                recordedAt:
+                    new Date(),
+            });
 
-            requestUrl: req.originalUrl,
-            username,
-            statusCode: res.statusCode,
-            responseTimeMs,
-            payloadBytes:
-            finalPayloadBytes,
-            recordsReturned,
-            recordedAt: new Date(),
-        });
+            console.log(
+                `📊 API metric recorded: ` +
+                `${username} | ` +
+                `${responseTimeMs.toFixed(3)} ms | ` +
+                `${recordsReturned ?? "unknown"} records | ` +
+                `${finalPayloadBytes ?? "unknown"} bytes`
+            );
+        } catch (error) {
+            console.error(
+                "Unable to record API response metric:",
+                error.message
+            );
+        }
     });
 
-    next();
+    return next();
 }
 
 module.exports = {
