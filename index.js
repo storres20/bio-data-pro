@@ -735,6 +735,22 @@ wss.on('connection', (ws) => {
     });
 });
 
+// se reutiliza la funcion de cada 10min y por el momento va a
+// almacenar cada 1min
+function get10MinSlot(datetime) {
+    const date = new Date(datetime);
+    //const minutes = date.getMinutes();
+    //const roundedMinutes = Math.floor(minutes / 10) * 10;
+
+    //date.setMinutes(roundedMinutes);
+    date.setSeconds(0);
+    date.setMilliseconds(0);
+
+    return date;
+}
+
+/*
+// almacena cada 10 minutos (original)
 function get10MinSlot(datetime) {
     const date = new Date(datetime);
     const minutes = date.getMinutes();
@@ -746,6 +762,8 @@ function get10MinSlot(datetime) {
 
     return date;
 }
+*/
+
 
 function get4HSlot(datetime) {
     const date = new Date(datetime);
