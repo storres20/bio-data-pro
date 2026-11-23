@@ -2,6 +2,10 @@
 
 This is the backend server of the **MHUTEMP** project, responsible for receiving environmental data from ESP32 devices and storing it in a MongoDB database.
 
+<img width="800" height="450" alt="image" src="https://github.com/user-attachments/assets/bde99a36-5b87-49c7-bd4f-49b2e0dba4dd" />
+
+<img width="800" height="450" alt="image" src="https://github.com/user-attachments/assets/34de55ee-ea57-4189-9f9b-9bddf562f29f" />
+
 ## 🚀 Features
 
 - REST API endpoint to receive temperature and humidity data.
