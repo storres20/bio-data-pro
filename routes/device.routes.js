@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const Device = require('../models/device.model');
 const mongoose = require('mongoose');
+const { authenticate, deviceScope, listHospitalAreas, requireWebAdmin } = require('../access');
 
 // ✅ Get devices by hospital ID (with hospital and area populated)
-router.get('/hospital/:id', async (req, res) => {
+router.get('/hospital/:id', authenticate, async (req, res) => {
     try {
         const hospitalId = req.params.id;
 
@@ -13,7 +14,8 @@ router.get('/hospital/:id', async (req, res) => {
             return res.status(400).json({ message: 'Invalid hospital ID format' });
         }
 
-        const devices = await Device.find({ hospital_id: hospitalId })
+        if (hospitalId !== String(req.account.hospital_id)) return res.status(403).json({ message: 'Hospital access required' });
+        const devices = await Device.find(deviceScope(req.account))
             .populate('hospital_id', 'name')
             .populate('area_id', 'name');
 
@@ -24,7 +26,7 @@ router.get('/hospital/:id', async (req, res) => {
 });
 
 // ✅ Get all devices (admin or debug use)
-router.get('/', async (req, res) => {
+router.get('/', authenticate, requireWebAdmin, async (req, res) => {
     try {
         const devices = await Device.find()
             .populate('hospital_id', 'name')
@@ -36,7 +38,7 @@ router.get('/', async (req, res) => {
 });
 
 // ✅ Create new device
-router.post('/', async (req, res) => {
+router.post('/', authenticate, requireWebAdmin, async (req, res) => {
     const { name, brand, model, serie, hospital_id, area_id } = req.body;
 
     const device = new Device({
@@ -49,6 +51,10 @@ router.post('/', async (req, res) => {
     });
 
     try {
+        const catalog = await listHospitalAreas(hospital_id);
+        if (!catalog?.areas.some(area => String(area._id) === String(area_id))) {
+            return res.status(400).json({ message: 'Area must belong to the hospital' });
+        }
         const savedDevice = await device.save();
         res.status(201).json(savedDevice);
     } catch (error) {
@@ -57,19 +63,24 @@ router.post('/', async (req, res) => {
 });
 
 // ✅ PATCH: Assign sensor username to a device
-router.patch('/:id/assign-sensor', async (req, res) => {
+router.patch('/:id/assign-sensor', authenticate, requireWebAdmin, async (req, res) => {
     const deviceId = req.params.id;
     const { username } = req.body;
 
     try {
-        const device = await Device.findById(deviceId);
+        const device = await Device.findOne({ _id: deviceId, ...deviceScope(req.account) });
         if (!device) {
             return res.status(404).json({ message: 'Device not found' });
         }
 
-        device.assigned_sensor_username = username;
+        if (typeof username !== 'string') return res.status(400).json({ message: 'Invalid sensor' });
+        if (username && await Device.exists({ _id: { $ne: device._id }, assigned_sensor_username: username })) {
+            return res.status(409).json({ message: 'Sensor already assigned' });
+        }
+        device.assigned_sensor_username = username || null;
         await device.save();
 
+        await device.populate('hospital_id area_id', 'name');
         res.status(200).json(device);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -77,9 +88,9 @@ router.patch('/:id/assign-sensor', async (req, res) => {
 });
 
 // ✅ Get device assigned to a sensor username
-router.get('/by-sensor/:username', async (req, res) => {
+router.get('/by-sensor/:username', authenticate, async (req, res) => {
     try {
-        const device = await Device.findOne({ assigned_sensor_username: req.params.username })
+        const device = await Device.findOne({ ...deviceScope(req.account), assigned_sensor_username: req.params.username })
             .populate('hospital_id', 'name')
             .populate('area_id', 'name');
 

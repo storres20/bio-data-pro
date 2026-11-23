@@ -13,6 +13,8 @@ const admin = require('firebase-admin');
 const datas = require('./routes/data.routes');
 const authRoutes = require('./routes/auth.routes');
 const devices = require('./routes/device.routes');
+const User = require('./models/user.model');
+const { authenticate, canViewDevice, deviceScope, requireWebAdmin, verifySession } = require('./access');
 
 const TenMinData = require('./models/tenmin-data.model');
 const FourHData = require('./models/fourh-data.model');
@@ -70,9 +72,9 @@ app.use('/api/v1/datas', datas);
 app.use('/api/auth', authRoutes);
 app.use('/api/devices', devices);
 // metrics
-app.use("/api/metrics", metricsRoutes);
+app.use("/api/metrics", authenticate, requireWebAdmin, metricsRoutes);
 
-app.post('/api/devices/fcm-token', async (req, res) => {
+app.post('/api/devices/fcm-token', authenticate, async (req, res) => {
     try {
         const { observerId, fcmToken } = req.body;
 
@@ -80,10 +82,15 @@ app.post('/api/devices/fcm-token', async (req, res) => {
             return res.status(400).json({ error: 'observerId and fcmToken required' });
         }
 
+        const existingRegistration = fcmTokens.get(observerId);
+        if (existingRegistration?.accountId && String(existingRegistration.accountId) !== String(req.account._id)) {
+            return res.status(409).json({ error: 'Observer already registered' });
+        }
+
         let existingObserverId = null;
         for (const [id, data] of fcmTokens.entries()) {
             const existingToken = typeof data === 'string' ? data : data.token;
-            if (existingToken === fcmToken && id !== observerId) {
+            if (existingToken === fcmToken && id !== observerId && String(data.accountId) === String(req.account._id)) {
                 existingObserverId = id;
                 break;
             }
@@ -97,6 +104,7 @@ app.post('/api/devices/fcm-token', async (req, res) => {
         fcmTokens.set(observerId, {
             token: fcmToken,
             registeredAt: Date.now(),
+            accountId: req.account._id,
         });
 
         console.log(`🔑 FCM Token registrado para ${observerId}`);
@@ -109,7 +117,7 @@ app.post('/api/devices/fcm-token', async (req, res) => {
     }
 });
 
-app.get('/api/debug/fcm-analysis', (req, res) => {
+app.get('/api/debug/fcm-analysis', authenticate, requireWebAdmin, (req, res) => {
     const analysis = {
         totalEntries: fcmTokens.size,
         entries: [],
@@ -146,7 +154,7 @@ app.get('/api/debug/fcm-analysis', (req, res) => {
     });
 });
 
-app.get('/api/debug/active-alerts', (req, res) => {
+app.get('/api/debug/active-alerts', authenticate, requireWebAdmin, (req, res) => {
     const activeAlerts = [];
 
     for (const username of alertIntervals.keys()) {
@@ -165,7 +173,7 @@ app.get('/api/debug/active-alerts', (req, res) => {
     });
 });
 
-app.get('/api/debug/memory', (req, res) => {
+app.get('/api/debug/memory', authenticate, requireWebAdmin, (req, res) => {
     const used = process.memoryUsage();
 
     res.json({
@@ -189,7 +197,7 @@ app.get('/api/debug/memory', (req, res) => {
     });
 });
 
-app.get('/api/simulations', async (req, res) => {
+app.get('/api/simulations', authenticate, requireWebAdmin, async (req, res) => {
     try {
         const sims = await Simulation.find({}, 'username');
         res.json(sims);
@@ -198,7 +206,7 @@ app.get('/api/simulations', async (req, res) => {
     }
 });
 
-app.get('/api/door-events/all', async (req, res) => {
+app.get('/api/door-events/all', authenticate, requireWebAdmin, async (req, res) => {
     try {
         const { limit = 100, status } = req.query;
 
@@ -216,7 +224,7 @@ app.get('/api/door-events/all', async (req, res) => {
     }
 });
 
-app.get('/api/door-events/:username', async (req, res) => {
+app.get('/api/door-events/:username', authenticate, requireWebAdmin, async (req, res) => {
     try {
         const { username } = req.params;
         const { limit = 50, status } = req.query;
@@ -234,7 +242,7 @@ app.get('/api/door-events/:username', async (req, res) => {
     }
 });
 
-app.get('/api/v1/datas/temp-extremes/:username', async (req, res) => {
+app.get('/api/v1/datas/temp-extremes/:username', authenticate, async (req, res) => {
     try {
         const { username } = req.params;
 
@@ -243,8 +251,10 @@ app.get('/api/v1/datas/temp-extremes/:username', async (req, res) => {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
+        const device = await Device.findOne({ ...deviceScope(req.account), assigned_sensor_username: username }).select('_id').lean();
+        if (!device) return res.status(404).json({ message: 'Device not found' });
         const data = await TenMinData.find({
-            username: username,
+            device_id: device._id,
             datetime: {
                 $gte: today,
                 $lt: tomorrow
@@ -348,7 +358,15 @@ async function sendAlertToAllObservers(username, data, alertType = 'door', timeO
 
     console.log(`📤 Enviando alerta [${alertType.toUpperCase()}] a ${totalObservers} dispositivos...`);
 
-    for (const observerId of fcmTokens.keys()) {
+    const device = await Device.findOne({ assigned_sensor_username: username }).select('hospital_id area_id').lean();
+    if (!device) return;
+    const subscriptions = [...fcmTokens].filter(([, subscription]) => subscription.accountId);
+    const accounts = await User.find({ _id: { $in: subscriptions.map(([, subscription]) => subscription.accountId) } })
+        .select('hospital_id area_id area_ids').lean();
+    const byId = new Map(accounts.map(account => [String(account._id), account]));
+    for (const [observerId, subscription] of subscriptions) {
+        const account = byId.get(String(subscription.accountId));
+        if (!account || !canViewDevice(account, device)) continue;
         const promise = sendPushNotification(
             observerId,
             title,
@@ -443,7 +461,7 @@ wss.on('connection', (ws) => {
     let username = null;
 
     const authTimeout = setTimeout(() => {
-        if (!username) {
+        if (!username && !ws.viewer) {
             console.warn('⏱️ Cliente no identificado. Cerrando WebSocket por seguridad.');
             ws.close();
         }
@@ -472,7 +490,15 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            if (!parsed.username) return;
+            if (parsed.type === 'subscribe') {
+                if (username || ws.viewer) return;
+                const claims = verifySession(parsed.token);
+                if (!claims) return ws.close(1008, 'Authentication required');
+                ws.viewer = { id: claims.id, exp: claims.exp, sensors: parsed.sensors === true };
+                clearTimeout(authTimeout);
+                return;
+            }
+            if (ws.viewer || typeof parsed.username !== 'string') return;
 
             if (!username) {
                 username = parsed.username;
@@ -661,12 +687,30 @@ wss.on('connection', (ws) => {
             await handleTemperatureAlerts(username, parsed);
             await handleUnifiedAlerts(username, parsed);
 
-            const messageToSend = JSON.stringify(parsed);
-            wss.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(messageToSend);
-                }
+            const viewers = [...wss.clients].filter(client => client.viewer && client.readyState === WebSocket.OPEN);
+            if (!viewers.length) return;
+            const accountIds = [...new Set(viewers.map(client => client.viewer.id))];
+            const [device, accounts] = await Promise.all([
+                Device.findOne({ assigned_sensor_username: username }).populate('hospital_id area_id', 'name').lean(),
+                User.find({ _id: { $in: accountIds } }).select('hospital_id area_id area_ids role').lean(),
+            ]);
+            const byId = new Map(accounts.map(account => [String(account._id), account]));
+            const reading = JSON.stringify({
+                username, device,
+                datetime: parsed.datetime, temperature: parsed.temperature, humidity: parsed.humidity,
+                dsTemperature: parsed.dsTemperature, doorStatus: parsed.doorStatus,
             });
+            for (const client of viewers) {
+                if (client.readyState !== WebSocket.OPEN) continue;
+                const account = byId.get(client.viewer.id);
+                if (!account || client.viewer.exp * 1000 <= Date.now()) {
+                    client.close(1008, 'Session expired');
+                } else if (!device && client.viewer.sensors && account.role === 'web-admin') {
+                    client.send(JSON.stringify({ type: 'available-sensor', username }));
+                } else if (device && canViewDevice(account, { hospital_id: device.hospital_id?._id, area_id: device.area_id?._id })) {
+                    client.send(reading);
+                }
+            }
 
         } catch (err) {
             console.error('❌ Error parsing message:', err.message);

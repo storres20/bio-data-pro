@@ -1,5 +1,8 @@
 const express = require('express');
 const Model = require('../models/fourh-data.model');
+const Device = require('../models/device.model');
+const { isObjectIdOrHexString } = require('mongoose');
+const { authenticate, deviceScope, requireWebAdmin } = require('../access');
 
 const router = express.Router();
 
@@ -23,7 +26,7 @@ router.post('/data', async (req, res) => {
 });
 
 // ✅ GET all Method - include device info
-router.get('/', async (req, res) => {
+router.get('/', authenticate, requireWebAdmin, async (req, res) => {
     try {
         const data = await Model.find().populate('device_id');
         res.json(data);
@@ -33,7 +36,7 @@ router.get('/', async (req, res) => {
 });
 
 // ✅ GET data by username - include device info
-router.get('/username/:username', async (req, res) => {
+router.get('/username/:username', authenticate, requireWebAdmin, async (req, res) => {
     try {
         const username = req.params.username;
         const data = await Model.find({ username }).populate('device_id');
@@ -49,7 +52,7 @@ router.get('/username/:username', async (req, res) => {
 });
 
 // ✅ DELETE all data
-router.delete('/', async (req, res) => {
+router.delete('/', authenticate, requireWebAdmin, async (req, res) => {
     try {
         await Model.deleteMany({});
         res.status(200).json({ message: 'All data deleted successfully' });
@@ -59,7 +62,7 @@ router.delete('/', async (req, res) => {
 });
 
 // ✅ DELETE data by username
-router.delete('/:username', async (req, res) => {
+router.delete('/:username', authenticate, requireWebAdmin, async (req, res) => {
     const { username } = req.params;
     try {
         const result = await Model.deleteMany({ username });
@@ -74,7 +77,7 @@ router.delete('/:username', async (req, res) => {
 });
 
 // ✅ GET all unique usernames
-router.get('/usernames', async (req, res) => {
+router.get('/usernames', authenticate, requireWebAdmin, async (req, res) => {
     try {
         const usernames = await Model.distinct('username');
         res.status(200).json(usernames);
@@ -83,27 +86,25 @@ router.get('/usernames', async (req, res) => {
     }
 });
 
-router.get('/by-device/:deviceId', async (req, res) => {
+router.get('/by-device/:deviceId', authenticate, async (req, res) => {
     const { deviceId } = req.params;
     const { from, to } = req.query;
 
+    if (!isObjectIdOrHexString(deviceId)) return res.status(404).json({ message: 'Device not found' });
     const filter = { device_id: deviceId };
-
-    if (from && to) {
-        const fromDate = new Date(from);
-        const toDate = new Date(to);
-
-        if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
-            return res.status(400).json({ message: 'Invalid date format' });
+    if (from || to) {
+        const start = from ? new Date(from) : null;
+        const end = to ? new Date(to) : null;
+        if ((start && isNaN(start.getTime())) || (end && isNaN(end.getTime())) || (start && end && start > end)) {
+            return res.status(400).json({ message: 'Invalid date range' });
         }
-
-        filter.datetime = {
-            $gte: fromDate,
-            $lte: toDate,
-        };
+        filter.datetime = { ...(start && { $gte: start }), ...(end && { $lte: end }) };
     }
 
     try {
+        if (!await Device.exists({ _id: deviceId, ...deviceScope(req.account) })) {
+            return res.status(404).json({ message: 'Device not found' });
+        }
         const results = await Model.find(filter).sort({ datetime: 1 });
         res.json(results);
     } catch (err) {
