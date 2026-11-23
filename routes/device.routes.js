@@ -14,8 +14,10 @@ router.get('/hospital/:id', authenticate, async (req, res) => {
             return res.status(400).json({ message: 'Invalid hospital ID format' });
         }
 
-        if (hospitalId !== String(req.account.hospital_id)) return res.status(403).json({ message: 'Hospital access required' });
-        const devices = await Device.find(deviceScope(req.account))
+        if (req.account.role !== 'web-admin' && hospitalId !== String(req.account.hospital_id)) {
+            return res.status(403).json({ message: 'Hospital access required' });
+        }
+        const devices = await Device.find({ ...deviceScope(req.account), hospital_id: hospitalId })
             .populate('hospital_id', 'name')
             .populate('area_id', 'name');
 
@@ -56,6 +58,7 @@ router.post('/', authenticate, requireWebAdmin, async (req, res) => {
             return res.status(400).json({ message: 'Area must belong to the hospital' });
         }
         const savedDevice = await device.save();
+        await savedDevice.populate('hospital_id area_id', 'name');
         res.status(201).json(savedDevice);
     } catch (error) {
         res.status(400).json({ message: error.message });

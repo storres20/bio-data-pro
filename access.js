@@ -10,6 +10,7 @@ function allowedAreaIds(user) {
 }
 
 function deviceScope(user) {
+    if (user.role === 'web-admin') return {};
     return { hospital_id: user.hospital_id, area_id: { $in: allowedAreaIds(user) } };
 }
 

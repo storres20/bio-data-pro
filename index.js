@@ -494,7 +494,13 @@ wss.on('connection', (ws) => {
                 if (username || ws.viewer) return;
                 const claims = verifySession(parsed.token);
                 if (!claims) return ws.close(1008, 'Authentication required');
-                ws.viewer = { id: claims.id, exp: claims.exp, sensors: parsed.sensors === true };
+                ws.viewer = {
+                    id: claims.id,
+                    exp: claims.exp,
+                    sensors: parsed.sensors === true,
+                    hospitalId: typeof parsed.hospitalId === 'string' && mongoose.isObjectIdOrHexString(parsed.hospitalId)
+                        ? parsed.hospitalId : null,
+                };
                 clearTimeout(authTimeout);
                 return;
             }
@@ -707,8 +713,12 @@ wss.on('connection', (ws) => {
                     client.close(1008, 'Session expired');
                 } else if (!device && client.viewer.sensors && account.role === 'web-admin') {
                     client.send(JSON.stringify({ type: 'available-sensor', username }));
-                } else if (device && canViewDevice(account, { hospital_id: device.hospital_id?._id, area_id: device.area_id?._id })) {
-                    client.send(reading);
+                } else if (device?.hospital_id && device?.area_id) {
+                    const hospitalId = String(device.hospital_id._id);
+                    const allowed = account.role === 'web-admin'
+                        ? hospitalId === (client.viewer.hospitalId ?? String(account.hospital_id))
+                        : canViewDevice(account, { hospital_id: device.hospital_id._id, area_id: device.area_id._id });
+                    if (allowed) client.send(reading);
                 }
             }
 
