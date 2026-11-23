@@ -65,6 +65,20 @@ function sanitizeFilename(value) {
         .substring(0, 80);
 }
 
+function sendCsv(res, { prefix, filter, defaultFilter, header, rows }) {
+    const { sessionId } = getMetricsStatus();
+    const sessionName = sessionId ? sanitizeFilename(sessionId) : "no-session";
+    const filterName = filter ? sanitizeFilename(filter) : defaultFilter;
+    const filename = `${prefix}-${sessionName}-${filterName}.csv`;
+    const csvContent = "\uFEFF" + [header.join(","), ...rows].join("\r\n");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.status(200).send(csvContent);
+}
+
 // ---------------------------------------------------------
 // CONTROL DE LA SESIÓN
 // ---------------------------------------------------------
@@ -256,9 +270,6 @@ router.get(
                     deviceId,
                 });
 
-            const status =
-                getMetricsStatus();
-
             const header = [
                 "session_id",
                 "device_id",
@@ -302,50 +313,13 @@ router.get(
                 }
             );
 
-            const csvContent =
-                "\uFEFF" +
-                [
-                    header.join(","),
-                    ...rows,
-                ].join("\r\n");
-
-            const sessionName =
-                status.sessionId
-                    ? sanitizeFilename(
-                        status.sessionId
-                    )
-                    : "no-session";
-
-            const deviceName =
-                deviceId
-                    ? `-${sanitizeFilename(
-                        deviceId
-                    )}`
-                    : "-all-devices";
-
-            const filename =
-                `websocket-update-interval-` +
-                `${sessionName}` +
-                `${deviceName}.csv`;
-
-            res.setHeader(
-                "Content-Type",
-                "text/csv; charset=utf-8"
-            );
-
-            res.setHeader(
-                "Content-Disposition",
-                `attachment; filename="${filename}"`
-            );
-
-            res.setHeader(
-                "Cache-Control",
-                "no-store"
-            );
-
-            return res.status(200).send(
-                csvContent
-            );
+            return sendCsv(res, {
+                prefix: "websocket-update-interval",
+                filter: deviceId,
+                defaultFilter: "all-devices",
+                header,
+                rows,
+            });
         } catch (error) {
             console.error(
                 "Error exporting update interval CSV:",
@@ -455,9 +429,6 @@ router.get(
                     username
                 );
 
-            const status =
-                getMetricsStatus();
-
             const header = [
                 "session_id",
                 "sample_number",
@@ -541,50 +512,13 @@ router.get(
                 }
             );
 
-            const csvContent =
-                "\uFEFF" +
-                [
-                    header.join(","),
-                    ...rows,
-                ].join("\r\n");
-
-            const sessionName =
-                status.sessionId
-                    ? sanitizeFilename(
-                        status.sessionId
-                    )
-                    : "no-session";
-
-            const usernameName =
-                username
-                    ? `-${sanitizeFilename(
-                        username
-                    )}`
-                    : "-all-usernames";
-
-            const filename =
-                `api-response-time-` +
-                `${sessionName}` +
-                `${usernameName}.csv`;
-
-            res.setHeader(
-                "Content-Type",
-                "text/csv; charset=utf-8"
-            );
-
-            res.setHeader(
-                "Content-Disposition",
-                `attachment; filename="${filename}"`
-            );
-
-            res.setHeader(
-                "Cache-Control",
-                "no-store"
-            );
-
-            return res.status(200).send(
-                csvContent
-            );
+            return sendCsv(res, {
+                prefix: "api-response-time",
+                filter: username,
+                defaultFilter: "all-usernames",
+                header,
+                rows,
+            });
         } catch (error) {
             console.error(
                 "Error exporting API response CSV:",
@@ -713,9 +647,6 @@ router.get(
                     phase
                 );
 
-            const status =
-                getMetricsStatus();
-
             const header = [
                 "session_id",
                 "sample_number",
@@ -774,50 +705,13 @@ router.get(
                     .join(",")
             );
 
-            const csvContent =
-                "\uFEFF" +
-                [
-                    header.join(","),
-                    ...rows,
-                ].join("\r\n");
-
-            const sessionName =
-                status.sessionId
-                    ? sanitizeFilename(
-                        status.sessionId
-                    )
-                    : "no-session";
-
-            const phaseName =
-                phase
-                    ? `-${sanitizeFilename(
-                        phase
-                    )}`
-                    : "-all-phases";
-
-            const filename =
-                `backend-memory-usage-` +
-                `${sessionName}` +
-                `${phaseName}.csv`;
-
-            res.setHeader(
-                "Content-Type",
-                "text/csv; charset=utf-8"
-            );
-
-            res.setHeader(
-                "Content-Disposition",
-                `attachment; filename="${filename}"`
-            );
-
-            res.setHeader(
-                "Cache-Control",
-                "no-store"
-            );
-
-            return res
-                .status(200)
-                .send(csvContent);
+            return sendCsv(res, {
+                prefix: "backend-memory-usage",
+                filter: phase,
+                defaultFilter: "all-phases",
+                header,
+                rows,
+            });
         } catch (error) {
             console.error(
                 "Error exporting memory CSV:",

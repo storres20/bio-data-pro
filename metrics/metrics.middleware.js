@@ -1,11 +1,7 @@
 const {
+    isApiTestUsername,
     recordApiResponse,
 } = require("./metrics.service");
-
-const TARGET_USERNAMES = new Set([
-    "MHT-25-001",
-    "MHTv2-25-001",
-]);
 
 /**
  * Extrae el username de:
@@ -48,10 +44,7 @@ function apiResponseMetricsMiddleware(
     const username =
         extractUsernameFromPath(req);
 
-    if (
-        !username ||
-        !TARGET_USERNAMES.has(username)
-    ) {
+    if (!isApiTestUsername(username)) {
         return next();
     }
 

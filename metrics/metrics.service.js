@@ -85,8 +85,6 @@ function startMetricsSession() {
     stoppedAt = null;
     sessionId = generateSessionId();
 
-    currentMemoryPhase = "baseline";
-
     startMemorySampler();
 
     return getMetricsStatus();
@@ -308,6 +306,10 @@ function recordMessageArrival(deviceId) {
 // REGISTRO DEL TIEMPO DE RESPUESTA API
 // ---------------------------------------------------------
 
+function isApiTestUsername(username) {
+    return typeof username === "string" && API_TEST_USERNAMES.has(username.trim());
+}
+
 /**
  * Registra una muestra de tiempo de respuesta de API.
  *
@@ -341,12 +343,7 @@ function recordApiResponse({
         return null;
     }
 
-    if (
-        typeof username !== "string" ||
-        !API_TEST_USERNAMES.has(
-            username.trim()
-        )
-    ) {
+    if (!isApiTestUsername(username)) {
         return null;
     }
 
@@ -1840,6 +1837,7 @@ module.exports = {
     getUpdateIntervalsForExport,
 
     // Experimento 2: API response time
+    isApiTestUsername,
     recordApiResponse,
     getApiResponseSummary,
     getApiResponseRawSamples,

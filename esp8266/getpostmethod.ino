@@ -7,7 +7,6 @@
 
 const char* ssid = "XXXX"; // Replace with your WiFi SSID
 const char* password = "XXXX"; // Replace with your WiFi password
-const char* getServerUrl = "https://bio-data-peach-kappa.vercel.app/api/v1/datas"; // Your GET URL
 const char* postServerUrl = "/api/v1/datas/data"; // Your POST URL path
 const char* host = "bio-data-peach-kappa.vercel.app"; // Hostname
 
