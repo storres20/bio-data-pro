@@ -78,15 +78,26 @@ async function protectWebAdmin(actor, target, change, apply) {
     });
 }
 
+function resetFilter(token) {
+    if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)) return null;
+    return { resetDigest: hashToken(token), resetExpiresAt: { $gt: new Date() }, disabledAt: null };
+}
+
+router.post('/reset-password/validate', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const filter = resetFilter(req.body?.token);
+    const user = filter && await User.findOne(filter).select('username -_id').lean();
+    if (!user) return res.status(400).json({ message: 'The link is invalid, expired or already used.' });
+    res.json({ username: user.username });
+});
+
 router.post('/reset-password', async (req, res) => {
     res.set('Cache-Control', 'no-store');
-    const { token, password } = req.body;
-    if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)
-        || typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password) > 72) {
-        return res.status(400).json({ message: 'Use a valid link and a password of at least 12 characters and at most 72 bytes.' });
+    const { token, password } = req.body ?? {};
+    const eligible = resetFilter(token);
+    if (!eligible || typeof password !== 'string' || [...password].length < 6 || Buffer.byteLength(password) > 72) {
+        return res.status(400).json({ message: 'Use a valid link and a password of at least 6 characters and at most 72 bytes.' });
     }
-    const digest = hashToken(token);
-    const eligible = { resetDigest: digest, resetExpiresAt: { $gt: new Date() }, disabledAt: null };
     if (!await User.exists(eligible)) return res.status(400).json({ message: 'The link has expired or has already been used.' });
     const passwordHash = await bcrypt.hash(password, 10);
     const updated = await User.updateOne({ ...eligible, resetExpiresAt: { $gt: new Date() } }, {
