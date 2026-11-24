@@ -20,7 +20,7 @@ function canViewDevice(user, device) {
 }
 
 function signSession(user) {
-    return jwt.sign({ id: user._id.toString(), username: user.username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    return jwt.sign({ id: user._id.toString(), username: user.username, version: user.sessionVersion ?? 0 }, process.env.JWT_SECRET, { expiresIn: '1h' });
 }
 
 function verifySession(token) {
@@ -32,6 +32,10 @@ function verifySession(token) {
     }
 }
 
+function isSessionCurrent(user, claims) {
+    return Boolean(user && !user.disabledAt && (user.sessionVersion ?? 0) === (claims.version ?? 0));
+}
+
 async function authenticate(req, res, next) {
     res.set('Cache-Control', 'private, no-store');
     const match = req.get('authorization')?.match(/^Bearer (\S+)$/i);
@@ -39,7 +43,7 @@ async function authenticate(req, res, next) {
     if (!claims) return res.status(401).json({ message: 'Authentication required' });
     try {
         const user = await User.findById(claims.id).select('-password').lean();
-        if (!user) return res.status(401).json({ message: 'Authentication required' });
+        if (!isSessionCurrent(user, claims)) return res.status(401).json({ message: 'Authentication required' });
         req.account = user;
         next();
     } catch (error) {
@@ -87,5 +91,5 @@ async function profileFor(user) {
 
 module.exports = {
     allowedAreaIds, authenticate, canViewDevice, deviceScope, listHospitalAreas,
-    profileFor, requireAdministrator, requireWebAdmin, signSession, verifySession,
+    isSessionCurrent, profileFor, requireAdministrator, requireWebAdmin, signSession, verifySession,
 };

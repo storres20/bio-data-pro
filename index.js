@@ -14,7 +14,7 @@ const datas = require('./routes/data.routes');
 const authRoutes = require('./routes/auth.routes');
 const devices = require('./routes/device.routes');
 const User = require('./models/user.model');
-const { authenticate, canViewDevice, deviceScope, requireWebAdmin, verifySession } = require('./access');
+const { authenticate, canViewDevice, deviceScope, isSessionCurrent, requireWebAdmin, verifySession } = require('./access');
 
 const TenMinData = require('./models/tenmin-data.model');
 const FourHData = require('./models/fourh-data.model');
@@ -106,6 +106,7 @@ app.post('/api/devices/fcm-token', authenticate, async (req, res) => {
             token: fcmToken,
             registeredAt: Date.now(),
             accountId: req.account._id,
+            version: req.account.sessionVersion ?? 0,
         });
 
         console.log(`🔑 FCM Token registrado para ${observerId}`);
@@ -363,11 +364,11 @@ async function sendAlertToAllObservers(username, data, alertType = 'door', timeO
     if (!device) return;
     const subscriptions = [...fcmTokens].filter(([, subscription]) => subscription.accountId);
     const accounts = await User.find({ _id: { $in: subscriptions.map(([, subscription]) => subscription.accountId) } })
-        .select('hospital_id area_id area_ids').lean();
+        .select('hospital_id area_id area_ids disabledAt sessionVersion').lean();
     const byId = new Map(accounts.map(account => [String(account._id), account]));
     for (const [observerId, subscription] of subscriptions) {
         const account = byId.get(String(subscription.accountId));
-        if (!account || !canViewDevice(account, device)) continue;
+        if (!isSessionCurrent(account, subscription) || !canViewDevice(account, device)) continue;
         const promise = sendPushNotification(
             observerId,
             title,
@@ -495,9 +496,13 @@ wss.on('connection', (ws) => {
                 if (username || ws.viewer) return;
                 const claims = verifySession(parsed.token);
                 if (!claims) return ws.close(1008, 'Authentication required');
+                const account = await User.findById(claims.id).select('disabledAt sessionVersion').lean();
+                if (!isSessionCurrent(account, claims)) return ws.close(1008, 'Session expired');
+                if (ws.viewer || username || ws.readyState !== WebSocket.OPEN) return;
                 ws.viewer = {
                     id: claims.id,
                     exp: claims.exp,
+                    version: claims.version,
                     sensors: parsed.sensors === true,
                     hospitalId: typeof parsed.hospitalId === 'string' && mongoose.isObjectIdOrHexString(parsed.hospitalId)
                         ? parsed.hospitalId : null,
@@ -699,7 +704,7 @@ wss.on('connection', (ws) => {
             const accountIds = [...new Set(viewers.map(client => client.viewer.id))];
             const [device, accounts] = await Promise.all([
                 Device.findOne({ archived_at: null, assigned_sensor_username: username }).populate('hospital_id area_id', 'name').lean(),
-                User.find({ _id: { $in: accountIds } }).select('hospital_id area_id area_ids role').lean(),
+                User.find({ _id: { $in: accountIds } }).select('hospital_id area_id area_ids role disabledAt sessionVersion').lean(),
             ]);
             const byId = new Map(accounts.map(account => [String(account._id), account]));
             const reading = JSON.stringify({
@@ -710,7 +715,7 @@ wss.on('connection', (ws) => {
             for (const client of viewers) {
                 if (client.readyState !== WebSocket.OPEN) continue;
                 const account = byId.get(client.viewer.id);
-                if (!account || client.viewer.exp * 1000 <= Date.now()) {
+                if (!isSessionCurrent(account, client.viewer) || client.viewer.exp * 1000 <= Date.now()) {
                     client.close(1008, 'Session expired');
                 } else if (!device && client.viewer.sensors && account.role === 'web-admin') {
                     client.send(JSON.stringify({ type: 'available-sensor', username }));

@@ -4,10 +4,11 @@ const { isObjectIdOrHexString } = require('mongoose');
 const User = require('../models/user.model');
 const Hospital = require('../models/hospital.model');
 const {
-    allowedAreaIds, authenticate, listHospitalAreas, profileFor, requireAdministrator, signSession,
+    authenticate, listHospitalAreas, profileFor, requireAdministrator, signSession,
 } = require('../access');
 
 const router = express.Router();
+router.use(require('./userAdmin.routes'));
 
 router.post('/register', async (req, res) => {
     const { username, password, hospital_id, area_id } = req.body;
@@ -28,6 +29,7 @@ router.post('/register', async (req, res) => {
             hospital_id,
             area_ids: [],
             requested_area_id: area_id,
+            trackLogin: true,
         });
         res.status(201).json({ message: 'Account created. An administrator must approve your area access.', pendingApproval: true });
     } catch (error) {
@@ -42,11 +44,13 @@ router.post('/login', async (req, res) => {
         return res.status(400).json({ message: 'Invalid username or password' });
     }
     const user = await User.findOne({ username: username.trim() }).lean();
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (!user || user.disabledAt || !(await bcrypt.compare(password, user.password))) {
         return res.status(400).json({ message: 'Invalid username or password' });
     }
     const profile = await profileFor(user);
     if (!profile) return res.status(403).json({ message: 'No hospital assigned' });
+    const recorded = await User.updateOne({ _id: user._id, password: user.password, disabledAt: null }, { $set: { lastLoginAt: new Date() } });
+    if (!recorded.matchedCount) return res.status(400).json({ message: 'Invalid username or password' });
     res.set('Cache-Control', 'private, no-store');
     res.json({ token: signSession(user), user: profile });
 });
@@ -66,24 +70,6 @@ router.get('/hospitals/:id/areas', async (req, res) => {
     const catalog = await listHospitalAreas(req.params.id);
     if (!catalog) return res.status(404).json({ message: 'Hospital not found' });
     res.json(catalog.areas);
-});
-
-router.get('/users', authenticate, requireAdministrator, async (req, res) => {
-    const hospitalId = req.account.role === 'web-admin' ? req.query.hospitalId ?? req.account.hospital_id : req.account.hospital_id;
-    if (!isObjectIdOrHexString(hospitalId)) return res.status(400).json({ message: 'Invalid hospital' });
-    const catalog = await listHospitalAreas(hospitalId);
-    if (!catalog) return res.status(404).json({ message: 'Hospital not found' });
-    const users = await User.find({ hospital_id: hospitalId, role: { $nin: ['hospital-admin', 'web-admin'] } })
-        .select('username area_id area_ids requested_area_id').sort({ username: 1 }).lean();
-    res.json({
-        areas: catalog.areas,
-        users: users.map(user => ({
-            _id: user._id,
-            username: user.username,
-            areaIds: allowedAreaIds(user).map(String),
-            requestedAreaId: user.requested_area_id,
-        })),
-    });
 });
 
 router.patch('/users/:id/areas', authenticate, requireAdministrator, async (req, res) => {
