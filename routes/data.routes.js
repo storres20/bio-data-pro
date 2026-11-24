@@ -1,6 +1,7 @@
 const express = require('express');
 const Model = require('../models/fourh-data.model');
 const Device = require('../models/device.model');
+const withDeviceRecord = require('../deviceRecords');
 const { isObjectIdOrHexString } = require('mongoose');
 const { authenticate, deviceScope, requireWebAdmin } = require('../access');
 
@@ -18,7 +19,13 @@ router.post('/data', async (req, res) => {
     });
 
     try {
-        const dataToSave = await data.save();
+        if (req.body.device_id && !isObjectIdOrHexString(req.body.device_id)) {
+            return res.status(400).json({ message: 'Invalid device' });
+        }
+        const dataToSave = req.body.device_id
+            ? await withDeviceRecord({ _id: req.body.device_id }, id => id ? data.save() : null)
+            : await data.save();
+        if (!dataToSave) return res.status(409).json({ message: 'The device must exist and be active' });
         res.status(200).json(dataToSave);
     } catch (error) {
         res.status(400).json({ message: error.message });

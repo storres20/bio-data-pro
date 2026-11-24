@@ -20,6 +20,7 @@ const TenMinData = require('./models/tenmin-data.model');
 const FourHData = require('./models/fourh-data.model');
 
 const Device = require('./models/device.model');
+const withDeviceRecord = require('./deviceRecords');
 const Simulation = require('./models/simulation.model');
 const DoorEvent = require('./models/door-event.model');
 
@@ -251,7 +252,7 @@ app.get('/api/v1/datas/temp-extremes/:username', authenticate, async (req, res) 
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        const device = await Device.findOne({ ...deviceScope(req.account), assigned_sensor_username: username }).select('_id').lean();
+        const device = await Device.findOne({ ...deviceScope(req.account), archived_at: null, assigned_sensor_username: username }).select('_id').lean();
         if (!device) return res.status(404).json({ message: 'Device not found' });
         const data = await TenMinData.find({
             device_id: device._id,
@@ -358,7 +359,7 @@ async function sendAlertToAllObservers(username, data, alertType = 'door', timeO
 
     console.log(`📤 Enviando alerta [${alertType.toUpperCase()}] a ${totalObservers} dispositivos...`);
 
-    const device = await Device.findOne({ assigned_sensor_username: username }).select('hospital_id area_id').lean();
+    const device = await Device.findOne({ archived_at: null, assigned_sensor_username: username }).select('hospital_id area_id').lean();
     if (!device) return;
     const subscriptions = [...fcmTokens].filter(([, subscription]) => subscription.accountId);
     const accounts = await User.find({ _id: { $in: subscriptions.map(([, subscription]) => subscription.accountId) } })
@@ -697,7 +698,7 @@ wss.on('connection', (ws) => {
             if (!viewers.length) return;
             const accountIds = [...new Set(viewers.map(client => client.viewer.id))];
             const [device, accounts] = await Promise.all([
-                Device.findOne({ assigned_sensor_username: username }).populate('hospital_id area_id', 'name').lean(),
+                Device.findOne({ archived_at: null, assigned_sensor_username: username }).populate('hospital_id area_id', 'name').lean(),
                 User.find({ _id: { $in: accountIds } }).select('hospital_id area_id area_ids role').lean(),
             ]);
             const byId = new Map(accounts.map(account => [String(account._id), account]));
@@ -836,20 +837,16 @@ async function saveSensorData(username, data, { Model, getSlot, stateKey, logLab
             return;
         }
 
-        const device = await Device.findOne({ assigned_sensor_username: username });
-
-        const reading = new Model({
+        await withDeviceRecord({ assigned_sensor_username: username }, deviceId => new Model({
             temperature: data.temperature !== null ? parseFloat(data.temperature) : null,
             humidity: data.humidity !== null ? parseFloat(data.humidity) : null,
             dsTemperature: data.dsTemperature !== null ? parseFloat(data.dsTemperature) : null,
             username: username,
             datetime: new Date(data.datetime),
-            device_id: device ? device._id : null,
+            device_id: deviceId,
             doorStatus: data.doorStatus || 'closed',
             time_slot: slot
-        });
-
-        await reading.save();
+        }).save());
 
         if (state) {
             state[stateKey] = slot;
@@ -911,18 +908,14 @@ async function handleDoorEvents(username, data) {
         console.log(`🔓 ${username}: PUERTA ABIERTA`);
 
         try {
-            const device = await Device.findOne({ assigned_sensor_username: username });
-
-            const newEvent = new DoorEvent({
+            const newEvent = await withDeviceRecord({ assigned_sensor_username: username }, deviceId => new DoorEvent({
                 username: username,
                 opened_at: new Date(data.datetime),
                 temp_OUT_before: data.dsTemperature !== null ? parseFloat(data.dsTemperature) : null,
                 temp_IN_before: data.temperature !== null ? parseFloat(data.temperature) : null,
                 humidity_before: data.humidity !== null ? parseFloat(data.humidity) : null,
-                device_id: device ? device._id : null
-            });
-
-            await newEvent.save();
+                device_id: deviceId
+            }).save());
             state.currentEvent = newEvent._id;
             state.doorOpenedAt = Date.now();
 

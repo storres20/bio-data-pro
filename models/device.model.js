@@ -27,6 +27,9 @@ const deviceSchema = new mongoose.Schema({
         ref: 'Area',
         required: true
     },
+    archived_at: { type: Date, default: null },
+    pendingRecordWrites: { type: Number, default: 0 },
+    archiveVersion: { type: Number, default: 0 },
     assigned_sensor_username: {
         type: String, // o el ID del ESP si prefieres
         default: null,
