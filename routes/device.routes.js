@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const { authenticate, deviceScope, requireWebAdmin } = require('../access');
 const Area = require('../models/area.model');
 const Hospital = require('../models/hospital.model');
+const { withAreas } = require('../areaChanges');
 const recordModels = [require('../models/fourh-data.model'), require('../models/tenmin-data.model'),
     require('../models/data.model'), require('../models/door-event.model')];
 
@@ -12,12 +13,12 @@ const fields = ['name', 'brand', 'model', 'serie'];
 const invalidId = id => !mongoose.isObjectIdOrHexString(id);
 const populateLocation = query => query.populate('hospital_id area_id', 'name');
 
-async function deviceDetails(body, hospitalId) {
+async function deviceDetails(body, hospitalId, session) {
     if (invalidId(hospitalId) || invalidId(body.area_id)) return null;
     const details = Object.fromEntries(fields.map(field => [field,
         typeof body[field] === 'string' ? body[field].trim() : '']));
-    if (Object.values(details).some(value => !value) || !await Area.exists({ _id: body.area_id })) return null;
-    const hospital = await Hospital.updateOne({ _id: hospitalId }, { $addToSet: { area_ids: body.area_id } });
+    if (Object.values(details).some(value => !value)) return null;
+    const hospital = await Hospital.updateOne({ _id: hospitalId }, { $addToSet: { area_ids: body.area_id } }, { session });
     return hospital.matchedCount ? { ...details, area_id: body.area_id } : null;
 }
 
@@ -65,9 +66,15 @@ router.get('/', authenticate, requireWebAdmin, async (req, res) => {
 router.post('/', authenticate, requireWebAdmin, async (req, res) => {
     const { hospital_id } = req.body;
     try {
-        const details = await deviceDetails(req.body, hospital_id);
-        if (!details) return res.status(400).json({ message: 'Enter valid device details, hospital and area' });
-        const savedDevice = await Device.create({ ...details, hospital_id });
+        if (invalidId(req.body.area_id)) return res.status(400).json({ message: 'Invalid area' });
+        const savedDevice = await withAreas([req.body.area_id], async session => {
+            const details = await deviceDetails(req.body, hospital_id, session);
+            if (!details) return null;
+            const [created] = await Device.create([{ ...details, hospital_id }], { session });
+            return created;
+        });
+        if (!savedDevice) return res.status(400).json({ message: 'Enter valid device details, hospital and area' });
+        savedDevice.$session(null);
         await savedDevice.populate('hospital_id area_id', 'name');
         res.status(201).json(savedDevice);
     } catch (error) {
@@ -80,9 +87,20 @@ router.patch('/:id', authenticate, requireWebAdmin, async (req, res) => {
     if (invalidId(req.params.id)) return res.status(404).json({ message: 'Device not found' });
     const existing = await Device.findById(req.params.id).select('hospital_id').lean();
     if (!existing) return res.status(404).json({ message: 'Device not found' });
-    const details = await deviceDetails(req.body, existing.hospital_id);
-    if (!details) return res.status(400).json({ message: 'Enter valid device details and area' });
-    const device = await populateLocation(Device.findByIdAndUpdate(existing._id, { $set: details }, { new: true }));
+    if (invalidId(req.body.area_id)) return res.status(400).json({ message: 'Invalid area' });
+    let device;
+    try {
+        device = await withAreas([req.body.area_id], async session => {
+            const details = await deviceDetails(req.body, existing.hospital_id, session);
+            if (!details) throw Object.assign(new Error('Enter valid device details and area'), { status: 400 });
+            const updated = await populateLocation(Device.findByIdAndUpdate(existing._id, { $set: details }, { new: true, session }));
+            if (!updated) throw Object.assign(new Error('Device not found'), { status: 404 });
+            return updated;
+        });
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ message: error.message });
+        throw error;
+    }
     if (!device) return res.status(404).json({ message: 'Device not found' });
     res.json(device);
 });

@@ -61,15 +61,16 @@ function requireWebAdmin(req, res, next) {
     res.status(403).json({ message: 'Web administrator access required' });
 }
 
-async function listHospitalAreas(hospitalId) {
-    const hospital = await Hospital.findById(hospitalId).select('name area_ids').lean();
+async function listHospitalAreas(hospitalId, session = null) {
+    const hospital = await Hospital.findById(hospitalId).select('name area_ids').session(session).lean();
     if (!hospital) return null;
-    const [deviceAreas, legacyAreas] = await Promise.all([
-        Device.distinct('area_id', { hospital_id: hospitalId }),
-        User.distinct('area_id', { hospital_id: hospitalId }),
-    ]);
-    const ids = new Set([...(hospital.area_ids ?? []), ...deviceAreas, ...legacyAreas].filter(Boolean).map(String));
-    const areas = await Area.find({ _id: { $in: [...ids] } }).select('name').sort({ name: 1 }).lean();
+    const deviceAreas = await Device.distinct('area_id', { hospital_id: hospitalId }).session(session);
+    const legacyAreas = await User.distinct('area_id', { hospital_id: hospitalId, area_ids: null }).session(session);
+    const userAreas = await User.distinct('area_ids', { hospital_id: hospitalId }).session(session);
+    const pendingAreas = await User.distinct('requested_area_id', { hospital_id: hospitalId }).session(session);
+    const ids = new Set([...(hospital.area_ids ?? []), ...deviceAreas, ...legacyAreas, ...userAreas, ...pendingAreas]
+        .filter(Boolean).map(String));
+    const areas = await Area.find({ _id: { $in: [...ids] } }).select('name').sort({ name: 1 }).session(session).lean();
     return { hospital: { _id: hospital._id, name: hospital.name }, areas };
 }
 

@@ -3,12 +3,14 @@ const bcrypt = require('bcrypt');
 const { isObjectIdOrHexString } = require('mongoose');
 const User = require('../models/user.model');
 const Hospital = require('../models/hospital.model');
+const { withAreas } = require('../areaChanges');
 const {
     authenticate, listHospitalAreas, profileFor, requireAdministrator, signSession,
 } = require('../access');
 
 const router = express.Router();
 router.use(require('./userAdmin.routes'));
+router.use(require('./areaAdmin.routes'));
 
 router.post('/register', async (req, res) => {
     const { username, password, hospital_id, area_id } = req.body;
@@ -23,16 +25,17 @@ router.post('/register', async (req, res) => {
     }
 
     try {
-        await User.create({
-            username: username.trim(),
-            password: await bcrypt.hash(password, 10),
-            hospital_id,
-            area_ids: [],
-            requested_area_id: area_id,
-            trackLogin: true,
+        const passwordHash = await bcrypt.hash(password, 10);
+        const created = await withAreas([area_id], async session => {
+            const current = await listHospitalAreas(hospital_id, session);
+            if (!current?.areas.some(area => String(area._id) === String(area_id))) return null;
+            return User.create([{ username: username.trim(), password: passwordHash, hospital_id,
+                area_ids: [], requested_area_id: area_id, trackLogin: true }], { session });
         });
+        if (!created) return res.status(400).json({ message: 'The area must belong to the selected hospital' });
         res.status(201).json({ message: 'Account created. An administrator must approve your area access.', pendingApproval: true });
     } catch (error) {
+        if (error.status === 404) return res.status(400).json({ message: 'The area is no longer available' });
         if (error.code === 11000) return res.status(409).json({ message: 'Username already exists' });
         throw error;
     }
@@ -82,18 +85,24 @@ router.patch('/users/:id/areas', authenticate, requireAdministrator, async (req,
     if (req.account.role === 'hospital-admin') filter.hospital_id = req.account.hospital_id;
     const target = await User.findOne(filter).select('hospital_id').lean();
     if (!target) return res.status(404).json({ message: 'User not found' });
-    const catalog = await listHospitalAreas(target.hospital_id);
-    const validIds = new Set(catalog?.areas.map(area => String(area._id)));
     const uniqueIds = [...new Set(areaIds.map(String))];
-    if (!uniqueIds.every(areaId => validIds.has(areaId))) {
-        return res.status(400).json({ message: 'Every area must belong to the user?s hospital' });
+    try {
+        const updated = await withAreas(uniqueIds, async session => {
+            const catalog = await listHospitalAreas(target.hospital_id, session);
+            const ids = new Set(catalog?.areas.map(area => String(area._id)));
+            if (!uniqueIds.every(areaId => ids.has(areaId))) return null;
+            return User.updateOne({ ...filter, hospital_id: target.hospital_id }, {
+                $set: { area_ids: uniqueIds },
+                $unset: { requested_area_id: '', area_id: '' },
+            }, { session });
+        });
+        if (!updated) return res.status(400).json({ message: 'Every area must belong to this hospital' });
+        if (!updated.matchedCount) return res.status(404).json({ message: 'User not found' });
+        res.json({ areaIds: uniqueIds });
+    } catch (error) {
+        if (error.status === 404) return res.status(400).json({ message: 'An area is no longer available' });
+        throw error;
     }
-    const update = await User.updateOne({ ...filter, hospital_id: target.hospital_id }, {
-        $set: { area_ids: uniqueIds },
-        $unset: { requested_area_id: '' },
-    });
-    if (!update.matchedCount) return res.status(404).json({ message: 'User not found' });
-    res.json({ areaIds: uniqueIds });
 });
 
 module.exports = router;

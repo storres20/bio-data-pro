@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 const { randomBytes, createHash } = require('node:crypto');
 const { isObjectIdOrHexString, connection } = require('mongoose');
 const User = require('../models/user.model');
+const { withAreas } = require('../areaChanges');
 const { allowedAreaIds, authenticate, listHospitalAreas, requireAdministrator } = require('../access');
 
 const router = express.Router();
@@ -41,14 +42,14 @@ function targetFilter(req) {
     return { _id: req.params.id, ...scope(req.account) };
 }
 
-async function accountDetails(body, actor, existing) {
+async function accountDetails(body, actor, existing, session = null) {
     const username = typeof body.username === 'string' ? body.username.trim() : '';
     const webAdmin = actor.role === 'web-admin';
     const hospitalId = webAdmin ? body.hospitalId : actor.hospital_id;
     const role = webAdmin ? body.role : 'user';
     if (!username || !isObjectIdOrHexString(hospitalId) || !roles.includes(role)
         || !Array.isArray(body.areaIds) || !body.areaIds.every(isObjectIdOrHexString)) return null;
-    const catalog = await listHospitalAreas(hospitalId);
+    const catalog = await listHospitalAreas(hospitalId, session);
     const areaIds = [...new Set(body.areaIds.map(String))];
     const allowed = new Set(catalog?.areas.map(area => String(area._id)));
     if (!catalog || !areaIds.every(id => allowed.has(id))) return null;
@@ -58,7 +59,7 @@ async function accountDetails(body, actor, existing) {
 
 function transitionError(res, error) {
     if (error.code === 11000) return res.status(409).json({ message: 'Username already exists' });
-    if (error.status === 409) return res.status(409).json({ message: error.message });
+    if (error.status) return res.status(error.status).json({ message: error.message });
     throw error;
 }
 
@@ -119,8 +120,12 @@ router.post('/users', async (req, res) => {
     if (!details) return res.status(400).json({ message: 'Enter a valid username, role, hospital and areas' });
     const { token, fields } = setupToken();
     try {
-        const user = await User.create({
-            ...details, ...fields, trackLogin: true, password: await bcrypt.hash(randomBytes(32).toString('hex'), 10),
+        const password = await bcrypt.hash(randomBytes(32).toString('hex'), 10);
+        const user = await withAreas(details.area_ids, async session => {
+            const current = await accountDetails(req.body, req.account, null, session);
+            if (!current) throw Object.assign(new Error('An area is no longer available'), { status: 400 });
+            const [created] = await User.create([{ ...current, ...fields, trackLogin: true, password }], { session });
+            return created;
         });
         res.status(201).json({ user: accountInfo(user), resetToken: token });
     } catch (error) {
@@ -140,24 +145,36 @@ router.patch('/users/:id', async (req, res) => {
     const approved = details.area_ids.includes(String(target.requested_area_id));
     const unset = {
         ...((moved || approved) && { requested_area_id: '' }),
-        ...(moved && { area_id: '' }),
+        ...((moved || !details.area_ids.includes(String(target.area_id))) && { area_id: '' }),
         ...(revoke && { resetDigest: '', resetExpiresAt: '' }),
     };
     try {
-        const saved = await protectWebAdmin(req.account, target, roleChanged, session =>
-            User.findOneAndUpdate({
-                ...filter, hospital_id: target.hospital_id, role: target.role ?? null, disabledAt: target.disabledAt ?? null,
-            }, {
-                $set: details,
-                ...(Object.keys(unset).length && { $unset: unset }),
-                ...(revoke && { $inc: { sessionVersion: 1 } }),
-            }, { new: true, session }).lean()
+        const saved = await protectWebAdmin(req.account, target, roleChanged, adminSession =>
+            withAreas(details.area_ids, async session => {
+                if (!await accountDetails(req.body, req.account, target, session)) {
+                    throw Object.assign(new Error('An area is no longer available'), { status: 400 });
+                }
+                return User.findOneAndUpdate({
+                    ...filter, hospital_id: target.hospital_id, role: target.role ?? null, disabledAt: target.disabledAt ?? null,
+                }, {
+                    $set: details,
+                    ...(Object.keys(unset).length && { $unset: unset }),
+                    ...(revoke && { $inc: { sessionVersion: 1 } }),
+                }, { new: true, session }).lean();
+            }, adminSession)
         );
         if (!saved) return res.status(409).json({ message: 'The account changed. Reload and try again.' });
         res.json({ user: accountInfo(saved) });
     } catch (error) {
         return transitionError(res, error);
     }
+});
+
+router.delete('/users/:id/area-request', async (req, res) => {
+    const user = await User.findOneAndUpdate({ ...targetFilter(req), requested_area_id: { $ne: null } },
+        { $unset: { requested_area_id: '' } }, { new: true }).lean();
+    if (!user) return res.status(404).json({ message: 'Pending area request not found' });
+    res.json({ user: accountInfo(user) });
 });
 
 router.patch('/users/:id/status', async (req, res) => {
